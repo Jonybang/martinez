@@ -142,7 +142,7 @@ function dotProduct(a, b) {
     return (a[0] * b[0]) + (a[1] * b[1]);
 }
 function subdivideSegments(eventQueue, subject, clipping, sbbox, cbbox, operation) {
-    const sweepLine = new Tree(compareSegments);
+    const sweepLineTree = new Tree(compareSegments);
     const sortedEvents = [];
 
     const rightbound = Math.min(sbbox[2], cbbox[2]);
@@ -158,13 +158,15 @@ function subdivideSegments(eventQueue, subject, clipping, sbbox, cbbox, operatio
             break;
         }
         if (event.left) {
-            next  = prev = sweepLine.insert(event);
-            begin = sweepLine.minNode();
+            next  = prev = sweepLineTree.insert(event);
+            begin = sweepLineTree.minNode();
 
-            if (prev !== begin) prev = sweepLine.prev(prev);
-            else                prev = null;
+            if (prev !== begin)
+                prev = sweepLineTree.prev(prev);
+            else
+                prev = null;
 
-            next = sweepLine.next(next);
+            next = sweepLineTree.next(next);
 
             const prevEvent = prev ? prev.key : null;
             let prevprevEvent;
@@ -179,8 +181,10 @@ function subdivideSegments(eventQueue, subject, clipping, sbbox, cbbox, operatio
             if (prev) {
                 if (possibleIntersection(prev.key, event, eventQueue) === 2) {
                     let prevprev = prev;
-                    if (prevprev !== begin) prevprev = sweepLine.prev(prevprev);
-                    else                    prevprev = null;
+                    if (prevprev !== begin)
+                        prevprev = sweepLineTree.prev(prevprev);
+                    else
+                        prevprev = null;
 
                     prevprevEvent = prevprev ? prevprev.key : null;
                     computeFields(prevEvent, prevprevEvent, operation);
@@ -189,15 +193,17 @@ function subdivideSegments(eventQueue, subject, clipping, sbbox, cbbox, operatio
             }
         } else {
             event = event.otherEvent;
-            next = prev = sweepLine.find(event);
+            next = prev = sweepLineTree.find(event);
 
             if (prev && next) {
 
-                if (prev !== begin) prev = sweepLine.prev(prev);
-                else                prev = null;
+                if (prev !== begin)
+                    prev = sweepLineTree.prev(prev);
+                else
+                    prev = null;
 
-                next = sweepLine.next(next);
-                sweepLine.remove(event);
+                next = sweepLineTree.next(next);
+                sweepLineTree.remove(event);
 
                 if (next && prev) {
                     possibleIntersection(prev.key, next.key, eventQueue);
@@ -227,7 +233,7 @@ function subdivideSegments(eventQueue, subject, clipping, sbbox, cbbox, operatio
  * intersection. If they overlap, the two end points of the overlapping segment.
  * Otherwise, null.
  */
-function segemntIntersection(a1, a2, b1, b2, noEndpointTouch) {
+function segmentIntersection(a1, a2, b1, b2, noEndpointTouch) {
     // The algorithm expects our lines in the form P + sd, where P is a point,
     // s is on the interval [0, 1], and d is a vector.
     // We are passed two points. P can be the first point of each pair. The
@@ -363,70 +369,6 @@ function compareBBoxes(subject, clipping, sbbox, cbbox, operation) {
         }
     }
     return result;
-}
-
-function processPolygon(contourOrHole, isSubject, depth, eventQueue, bbox, isExteriorRing) {
-    let i, len, s1, s2, e1, e2;
-    for (i = 0, len = contourOrHole.length - 1; i < len; i++) {
-        s1 = contourOrHole[i];
-        s2 = contourOrHole[i + 1];
-        e1 = new SweepEvent(s1, false, undefined, isSubject);
-        e2 = new SweepEvent(s2, false, e1, isSubject);
-        e1.otherEvent = e2;
-
-        if (s1[0] === s2[0] && s1[1] === s2[1]) {
-            continue; // skip collapsed edges, or it breaks
-        }
-
-        e1.contourId = e2.contourId = depth;
-        if (!isExteriorRing) {
-            e1.isExteriorRing = false;
-            e2.isExteriorRing = false;
-        }
-        if (compareEvents(e1, e2) > 0) {
-            e2.left = true;
-        } else {
-            e1.left = true;
-        }
-
-        const x = s1[0], y = s1[1];
-        bbox[0] = min(bbox[0], x);
-        bbox[1] = min(bbox[1], y);
-        bbox[2] = max(bbox[2], x);
-        bbox[3] = max(bbox[3], y);
-
-        // Pushing it so the queue is sorted from left to right,
-        // with object on the left having the highest priority.
-        eventQueue.push(e1);
-        eventQueue.push(e2);
-    }
-}
-
-
-function fillQueue(subject, clipping, sbbox, cbbox, operation) {
-    const eventQueue = new Queue(null, compareEvents);
-    let polygonSet, isExteriorRing, i, ii, j, jj; //, k, kk;
-
-    for (i = 0, ii = subject.length; i < ii; i++) {
-        polygonSet = subject[i];
-        for (j = 0, jj = polygonSet.length; j < jj; j++) {
-            isExteriorRing = j === 0;
-            if (isExteriorRing) contourId++;
-            processPolygon(polygonSet[j], true, contourId, eventQueue, sbbox, isExteriorRing);
-        }
-    }
-
-    for (i = 0, ii = clipping.length; i < ii; i++) {
-        polygonSet = clipping[i];
-        for (j = 0, jj = polygonSet.length; j < jj; j++) {
-            isExteriorRing = j === 0;
-            if (operation === DIFFERENCE) isExteriorRing = false;
-            if (isExteriorRing) contourId++;
-            processPolygon(polygonSet[j], false, contourId, eventQueue, cbbox, isExteriorRing);
-        }
-    }
-
-    return eventQueue;
 }
 
 /**
@@ -784,7 +726,7 @@ function possibleIntersection(se1, se2, eventQueue) {
     // did cost us half a day, so I'll leave it
     // out of respect
     // if (se1.isSubject === se2.isSubject) return;
-    const inter = segemntIntersection(
+    const inter = segmentIntersection(
         se1.point, se1.otherEvent.point,
         se2.point, se2.otherEvent.point
     );
@@ -880,6 +822,72 @@ function equals(p1, p2) {
         }
     }
     return false;
+}
+
+function processPolygon(contourOrHole, isSubject, depth, eventQueue, bbox, isExteriorRing) {
+    let i, len, s1, s2, e1, e2;
+    for (i = 0, len = contourOrHole.length - 1; i < len; i++) {
+        s1 = contourOrHole[i];
+        s2 = contourOrHole[i + 1];
+        e1 = new SweepEvent(s1, false, undefined, isSubject);
+        e2 = new SweepEvent(s2, false, e1, isSubject);
+        e1.otherEvent = e2;
+
+        if (s1[0] === s2[0] && s1[1] === s2[1]) {
+            continue; // skip collapsed edges, or it breaks
+        }
+
+        e1.contourId = e2.contourId = depth;
+        if (!isExteriorRing) {
+            e1.isExteriorRing = false;
+            e2.isExteriorRing = false;
+        }
+        if (compareEvents(e1, e2) > 0) {
+            e2.left = true;
+        } else {
+            e1.left = true;
+        }
+
+        const x = s1[0], y = s1[1];
+        bbox[0] = min(bbox[0], x);
+        bbox[1] = min(bbox[1], y);
+        bbox[2] = max(bbox[2], x);
+        bbox[3] = max(bbox[3], y);
+
+        // Pushing it so the queue is sorted from left to right,
+        // with object on the left having the highest priority.
+        eventQueue.push(e1);
+        eventQueue.push(e2);
+    }
+}
+
+function fillQueue(subject, clipping, sbbox, cbbox, operation) {
+    const eventQueue = new Queue(null, compareEvents);
+    let polygonSet, isExteriorRing, i, ii, j, jj; //, k, kk;
+
+    for (i = 0; i < subject.length; i++) {
+        polygonSet = subject[i];
+        for (j = 0; j < polygonSet.length; j++) {
+            isExteriorRing = j === 0;
+            if (isExteriorRing)
+                contourId++;
+            processPolygon(polygonSet[j], true, contourId, eventQueue, sbbox, isExteriorRing);
+        }
+    }
+
+    for (i = 0, ii = clipping.length; i < ii; i++) {
+        polygonSet = clipping[i];
+        for (j = 0, jj = polygonSet.length; j < jj; j++) {
+            isExteriorRing = j === 0;
+            if (operation === DIFFERENCE)
+                isExteriorRing = false;
+            if (isExteriorRing)
+                contourId++;
+            processPolygon(polygonSet[j], false, contourId, eventQueue, cbbox, isExteriorRing);
+        }
+    }
+
+    return eventQueue;
 }
 
 function boolean(subject, clipping, operation) {
