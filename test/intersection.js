@@ -1,6 +1,6 @@
 // import load from "load-json-file";
 
-const martinez = require('../.');
+const martinez = require('../index');
 const assert = require('assert');
 const fs = require('fs');
 
