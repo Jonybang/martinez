@@ -11,6 +11,7 @@ tap.test('Edge cases', (main) => {
     const clipping = shapes.features[1];
 
     t.test('intersection', (t) => {
+      console.log()
       const result = martinez.intersection(
         subject.geometry.coordinates,
         clipping.geometry.coordinates
