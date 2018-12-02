@@ -42,6 +42,7 @@
   "devDependencies": {
     "@turf/union": "^4.6.0",
     "@types/geojson": "^1.0.2",
+    "avl": "^1.4.4",
     "benchmark": "^2.1.4",
     "buble": "^0.19.3",
     "chai": "^4.2.0",

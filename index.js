@@ -1,5 +1,7 @@
 const Tree = require('splaytree/dist/splay');
 const Queue = require('tinyqueue');
+const LinkedList = require('./linked_list');
+// const AvlTree = require('avl');
 
 const NORMAL = 0;
 const NON_CONTRIBUTING = 1;
@@ -141,24 +143,178 @@ function crossProduct(a, b) {
 function dotProduct(a, b) {
     return (a[0] * b[0]) + (a[1] * b[1]);
 }
-function subdivideSegments(eventQueue, subject, clipping, sbbox, cbbox, operation) {
+/* eslint-enable no-unused-vars */
+/**
+ * @param  {SweepEvent} sweepEvent
+ * @param  {SweepEvent} prev
+ * @param  {Operation} operation
+ */
+function computeFields(sweepEvent, prev, operation) {
+    // compute inOut and otherInOut fields
+    if (prev === null) {
+        sweepEvent.inOut = false;
+        sweepEvent.otherInOut = true;
+
+        // previous line segment in sweepline belongs to the same polygon
+    } else {
+        if (sweepEvent.isSubject === prev.isSubject) {
+            sweepEvent.inOut = !prev.inOut;
+            sweepEvent.otherInOut = prev.otherInOut;
+
+            // previous line segment in sweepline belongs to the clipping polygon
+        } else {
+            sweepEvent.inOut = !prev.otherInOut;
+            sweepEvent.otherInOut = prev.isVertical() ? !prev.inOut : prev.inOut;
+        }
+
+        // compute prevInResult field
+        if (prev) {
+            sweepEvent.prevInResult = (!inResult(prev, operation) || prev.isVertical())
+                ? prev.prevInResult : prev;
+        }
+    }
+
+    // check if the line segment belongs to the Boolean operation
+    sweepEvent.inResult = inResult(sweepEvent, operation);
+}
+
+function possibleIntersection(se1, se2, eventQueue) {
+    // that disallows self-intersecting polygons,
+    // did cost us half a day, so I'll leave it
+    // out of respect
+    // if (se1.isSubject === se2.isSubject) return;
+    const inter = segmentIntersection(
+        se1.point, se1.otherEvent.point,
+        se2.point, se2.otherEvent.point
+    );
+
+    const nintersections = inter ? inter.length : 0;
+    // console.log('IntersectionInput', 'nintersections', nintersections, 'inter0', JSON.stringify(inter ? inter[0] : [0,0]), 'inter1', JSON.stringify(inter ? inter[1] : [0,0]), 'se1Point', JSON.stringify(se1.point), 'se1OtherPoint', JSON.stringify(se1.otherEvent.point), 'se2Point', JSON.stringify(se2.point), 'se2OtherPoint', JSON.stringify(se2.otherEvent.point))
+
+    if (nintersections === 0) 
+        return 0; // no intersection
+
+    // the line segments intersect at an endpoint of both line segments
+    if ((nintersections === 1) &&
+        (equals(se1.point, se2.point) ||
+            equals(se1.otherEvent.point, se2.otherEvent.point))) {
+        return 0;
+    }
+
+    if (nintersections === 2 && se1.isSubject === se2.isSubject) {
+        return 0;
+    }
+    
+    // The line segments associated to se1 and se2 intersect
+    if (nintersections === 1) {
+        // if the intersection point is not an endpoint of se1
+        if (!equals(se1.point, inter[0]) && !equals(se1.otherEvent.point, inter[0])) {
+            console.log('IntersectionWay', "!SweepEventUtils.equals(se1.point, inter[0]) && !SweepEventUtils.equals(state.store.sweepById[se1.otherEvent].point, inter[0])");
+            divideSegment(se1, inter[0], eventQueue);
+        }
+        // if the intersection point is not an endpoint of se2
+        if (!equals(se2.point, inter[0]) && !equals(se2.otherEvent.point, inter[0])) {
+            console.log('IntersectionWay', "!SweepEventUtils.equals(se2.point, inter[0]) && !SweepEventUtils.equals(state.store.sweepById[se2.otherEvent].point, inter[0])");
+            divideSegment(se2, inter[0], eventQueue);
+        }
+        return 1;
+    }
+
+    // The line segments associated to se1 and se2 overlap
+    const events = [];
+    let leftCoincide = false;
+    let rightCoincide = false;
+
+    if (equals(se1.point, se2.point)) {
+        leftCoincide = true; // linked
+    } else if (compareEvents(se1, se2) === 1) {
+        events[0] = se2;
+        events[1] = se1;
+    } else {
+        events[0] = se1;
+        events[1] = se2;
+    }
+
+    if (equals(se1.otherEvent.point, se2.otherEvent.point)) {
+        rightCoincide = true;
+    } else if (compareEvents(se1.otherEvent, se2.otherEvent) === 1) {
+        if (leftCoincide) {
+            events[0] = se2.otherEvent;
+            events[1] = se1.otherEvent;
+        } else {
+            events[2] = se2.otherEvent;
+            events[3] = se1.otherEvent;
+        }
+    } else {
+        if (leftCoincide) {
+            events[0] = se1.otherEvent;
+            events[1] = se2.otherEvent;
+        } else {
+            events[2] = se1.otherEvent;
+            events[3] = se2.otherEvent;
+        }
+    }
+
+    if ((leftCoincide && rightCoincide) || leftCoincide) {
+        // both line segments are equal or share the left endpoint
+        se2.type = NON_CONTRIBUTING;
+        se1.type = (se2.inOut === se1.inOut)
+            ? SAME_TRANSITION : DIFFERENT_TRANSITION;
+
+        if (leftCoincide && !rightCoincide) {
+            console.log('IntersectionWay', "leftCoincide && !rightCoincide");
+            // honestly no idea, but changing events selection from [2, 1]
+            // to [0, 1] fixes the overlapping self-intersecting polygons issue
+            divideSegment(events[1].otherEvent, events[0].point, eventQueue);
+        }
+        return 2;
+    }
+
+    // the line segments share the right endpoint
+    if (rightCoincide) {
+        console.log('IntersectionWay', "rightCoincide");
+        divideSegment(events[0], events[1].point, eventQueue);
+        return 3;
+    }
+
+    // no line segment includes totally the other one
+    if (events[0] !== events[3].otherEvent) {
+        console.log('IntersectionWay', "events[0] != state.store.sweepById[events[3]].otherEvent");
+        divideSegment(events[0], events[1].point, eventQueue);
+        divideSegment(events[1], events[2].point, eventQueue);
+        return 3;
+    }
+
+    // one line segment includes the other one
+    console.log('IntersectionWay', "one line segment includes the other one");
+    divideSegment(events[0], events[1].point, eventQueue);
+    divideSegment(events[3].otherEvent, events[2].point, eventQueue);
+
+    return 3;
+}
+
+function subdivideSegments(eventQueue, subjectBbox, clippingBbox, operation) {
     const sweepLineTree = new Tree(compareSegments);
     const sortedEvents = [];
 
-    const rightbound = Math.min(sbbox[2], cbbox[2]);
+    const rightbound = Math.min(subjectBbox[2], clippingBbox[2]);
 
+    console.log('LogSubdivideSegmentsRightbound', rightbound, 'operation', operation);
     let prev, next, begin;
 
-    while (eventQueue.length !== 0) {
-        let event = eventQueue.pop();
-        sortedEvents.push(event);
+    while (!eventQueue.isEmpty()) {
+        let sweepEvent = eventQueue.pop();
+        console.log('LogSubdivideSegmentsPop', JSON.stringify(sweepEvent.point));
+        
+        sortedEvents.push(sweepEvent);
         // optimization by bboxes for intersection and difference goes here
-        if ((operation === INTERSECTION && event.point[0] > rightbound) ||
-            (operation === DIFFERENCE   && event.point[0] > sbbox[2])) {
+        if (operation === INTERSECTION && sweepEvent.point[0] > rightbound) {
+            // ||(operation === DIFFERENCE   && sweepEvent.point[0] > subjectBbox[2])) {
+            console.log('break', sweepEvent.point, rightbound);
             break;
         }
-        if (event.left) {
-            next  = prev = sweepLineTree.insert(event);
+        if (sweepEvent.left) {
+            next  = prev = sweepLineTree.insert(sweepEvent);
             begin = sweepLineTree.minNode();
 
             if (prev !== begin)
@@ -170,16 +326,16 @@ function subdivideSegments(eventQueue, subject, clipping, sbbox, cbbox, operatio
 
             const prevEvent = prev ? prev.key : null;
             let prevprevEvent;
-            computeFields(event, prevEvent, operation);
+            computeFields(sweepEvent, prevEvent, operation);
             if (next) {
-                if (possibleIntersection(event, next.key, eventQueue) === 2) {
-                    computeFields(event, prevEvent, operation);
-                    computeFields(event, next.key, operation);
+                if (possibleIntersection(sweepEvent, next.key, eventQueue) === 2) {
+                    computeFields(sweepEvent, prevEvent, operation);
+                    computeFields(sweepEvent, next.key, operation);
                 }
             }
 
             if (prev) {
-                if (possibleIntersection(prev.key, event, eventQueue) === 2) {
+                if (possibleIntersection(prev.key, sweepEvent, eventQueue) === 2) {
                     let prevprev = prev;
                     if (prevprev !== begin)
                         prevprev = sweepLineTree.prev(prevprev);
@@ -188,12 +344,12 @@ function subdivideSegments(eventQueue, subject, clipping, sbbox, cbbox, operatio
 
                     prevprevEvent = prevprev ? prevprev.key : null;
                     computeFields(prevEvent, prevprevEvent, operation);
-                    computeFields(event,     prevEvent,     operation);
+                    computeFields(sweepEvent,     prevEvent,     operation);
                 }
             }
         } else {
-            event = event.otherEvent;
-            next = prev = sweepLineTree.find(event);
+            sweepEvent = sweepEvent.otherEvent;
+            next = prev = sweepLineTree.find(sweepEvent);
 
             if (prev && next) {
 
@@ -203,7 +359,7 @@ function subdivideSegments(eventQueue, subject, clipping, sbbox, cbbox, operatio
                     prev = null;
 
                 next = sweepLineTree.next(next);
-                sweepLineTree.remove(event);
+                sweepLineTree.remove(sweepEvent);
 
                 if (next && prev) {
                     possibleIntersection(prev.key, next.key, eventQueue);
@@ -248,9 +404,13 @@ function segmentIntersection(a1, a2, b1, b2, noEndpointTouch) {
 
     function toPoint(p, s, d) {
         return [
-            p[0] + s * d[0],
-            p[1] + s * d[1]
+            p[0] + s * d[0] / Math.pow(10, 12),
+            p[1] + s * d[1] / Math.pow(10, 12)
         ];
+    }
+    
+    function divideToSzabo(a, b) {
+        return Math.round((a * Math.pow(10, 12)) / b * 1000) / 1000;
     }
 
     /* eslint-enable arrow-body-style */
@@ -261,6 +421,7 @@ function segmentIntersection(a1, a2, b1, b2, noEndpointTouch) {
     let sqrKross = kross * kross;
     const sqrLenA = dotProduct(va, va);
     //const sqrLenB  = dotProduct(vb, vb);
+    // console.log('SegmentIntersectionInput', 'va', JSON.stringify(va), 'vb', JSON.stringify(vb), 'e', JSON.stringify(e), 'kross', kross, 'sqrKross', sqrKross, 'sqrLenA', sqrLenA)
 
     // Check for line intersection. This works because of the properties of the
     // cross product -- specifically, two vectors are parallel if and only if the
@@ -271,24 +432,28 @@ function segmentIntersection(a1, a2, b1, b2, noEndpointTouch) {
         // If they're not parallel, then (because these are line segments) they
         // still might not actually intersect. This code checks that the
         // intersection point of the lines is actually on both line segments.
-        const s = crossProduct(e, vb) / kross;
-        if (s < 0 || s > 1) {
+        // console.log('SegmentIntersectionSqrKross', 'sqrKross', sqrKross, 'toProductVb', crossProduct(e, vb), 's', divideToSzabo(crossProduct(e, vb), kross), 'toProductVa', crossProduct(e, va), 't', divideToSzabo(crossProduct(e, va), kross));
+        const s = divideToSzabo(crossProduct(e, vb), kross);
+        if (s < 0 || s > Math.pow(10, 12)) {
             // not on line segment a
             return null;
         }
-        const t = crossProduct(e, va) / kross;
-        if (t < 0 || t > 1) {
+        const t = divideToSzabo(crossProduct(e, va), kross);
+        if (t < 0 || t > Math.pow(10, 12)) {
             // not on line segment b
             return null;
         }
-        if (s === 0 || s === 1) {
+        if (s === 0 || s === Math.pow(10, 12)) {
+            console.log('SegmentIntersectionWay', "s == 0 || s == 1", s);
             // on an endpoint of line segment a
             return noEndpointTouch ? null : [toPoint(a1, s, va)];
         }
-        if (t === 0 || t === 1) {
+        if (t === 0 || t === Math.pow(10, 12)) {
+            console.log('SegmentIntersectionWay', "t === 0 || t === 1", t);
             // on an endpoint of line segment b
             return noEndpointTouch ? null : [toPoint(b1, t, vb)];
         }
+        console.log('SegmentIntersectionWay', "sqrKross > 0", sqrKross);
         return [toPoint(a1, s, va)];
     }
 
@@ -307,30 +472,33 @@ function segmentIntersection(a1, a2, b1, b2, noEndpointTouch) {
         return null;
     }
 
-    const sa = dotProduct(va, e) / sqrLenA;
-    const sb = sa + dotProduct(va, vb) / sqrLenA;
+    const sa = divideToSzabo(dotProduct(va, e), sqrLenA);
+    const sb = divideToSzabo(sa + dotProduct(va, vb), sqrLenA);
     const smin = Math.min(sa, sb);
     const smax = Math.max(sa, sb);
 
     // this is, essentially, the FindIntersection acting on floats from
     // Schneider & Eberly, just inlined into this function.
-    if (smin <= 1 && smax >= 0) {
+    if (smin <= Math.pow(10, 12) && smax >= 0) {
 
         // overlap on an end point
-        if (smin === 1) {
+        if (smin === Math.pow(10, 12)) {
+            console.log('SegmentIntersectionWay', "smin === 1", smax);
             return noEndpointTouch ? null : [toPoint(a1, smin > 0 ? smin : 0, va)];
         }
 
         if (smax === 0) {
+            console.log('SegmentIntersectionWay', "smax === 0", smin);
             return noEndpointTouch ? null : [toPoint(a1, smax < 1 ? smax : 1, va)];
         }
 
         if (noEndpointTouch && smin === 0 && smax === 1) return null;
 
+        console.log('SegmentIntersectionWay', "here's overlap on a segment -- two points of intersection. Return both.", smin);
         // There's overlap on a segment -- two points of intersection. Return both.
         return [
             toPoint(a1, smin > 0 ? smin : 0, va),
-            toPoint(a1, smax < 1 ? smax : 1, va)
+            toPoint(a1, smax < Math.pow(10, 12) ? smax : Math.pow(10, 12), va)
         ];
     }
 
@@ -353,12 +521,12 @@ function trivialOperation(subject, clipping, operation) {
 }
 
 
-function compareBBoxes(subject, clipping, sbbox, cbbox, operation) {
+function compareBBoxes(subject, clipping, subjectBbox, clippingBbox, operation) {
     let result = null;
-    if (sbbox[0] > cbbox[2] ||
-        cbbox[0] > sbbox[2] ||
-        sbbox[1] > cbbox[3] ||
-        cbbox[1] > sbbox[3]) {
+    if (subjectBbox[0] > clippingBbox[2] ||
+        clippingBbox[0] > subjectBbox[2] ||
+        subjectBbox[1] > clippingBbox[3] ||
+        clippingBbox[1] > subjectBbox[3]) {
         if (operation === INTERSECTION) {
             result = EMPTY;
         } else if (operation === DIFFERENCE) {
@@ -369,17 +537,6 @@ function compareBBoxes(subject, clipping, sbbox, cbbox, operation) {
         }
     }
     return result;
-}
-
-/**
- * Signed area of the triangle (p0, p1, p2)
- * @param  {Array.<Number>} p0
- * @param  {Array.<Number>} p1
- * @param  {Array.<Number>} p2
- * @return {Number}
- */
-function signedArea(p0, p1, p2) {
-    return (p0[0] - p2[0]) * (p1[1] - p2[1]) - (p1[0] - p2[0]) * (p0[1] - p2[1]);
 }
 
 /**
@@ -402,7 +559,33 @@ function compareEvents(e1, e2) {
     if (p1[1] !== p2[1])
         return p1[1] > p2[1] ? 1 : -1;
 
-    return specialCases(e1, e2, p1, p2);
+    // Same coordinates, but one is a left endpoint and the other is
+    // a right endpoint. The right endpoint is processed first
+    if (e1.left !== e2.left)
+        return e1.left ? 1 : -1;
+
+    // const p2 = e1.otherEvent.point, p3 = e2.otherEvent.point;
+    // const sa = (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
+    // Same coordinates, both events
+    // are left endpoints or right endpoints.
+    // not collinear
+    if (signedArea(p1, e1.otherEvent.point, e2.otherEvent.point) !== 0) {
+        // the event associate to the bottom segment is processed first
+        return (!e1.isBelow(e2.otherEvent.point)) ? 1 : -1;
+    }
+
+    return (!e1.isSubject && e2.isSubject) ? 1 : -1;
+}
+
+/**
+ * Signed area of the triangle (p0, p1, p2)
+ * @param  {Array.<Number>} p0
+ * @param  {Array.<Number>} p1
+ * @param  {Array.<Number>} p2
+ * @return {Number}
+ */
+function signedArea(p0, p1, p2) {
+    return (p0[0] - p2[0]) * (p1[1] - p2[1]) - (p1[0] - p2[0]) * (p0[1] - p2[1]);
 }
 
 /**
@@ -447,76 +630,20 @@ function compareSegments(le1, le2) {
     return compareEvents(le1, le2) === 1 ? 1 : -1;
 }
 
-/* eslint-disable no-unused-vars */
-function specialCases(e1, e2, p1, p2) {
-    // Same coordinates, but one is a left endpoint and the other is
-    // a right endpoint. The right endpoint is processed first
-    if (e1.left !== e2.left)
-        return e1.left ? 1 : -1;
-
-    // const p2 = e1.otherEvent.point, p3 = e2.otherEvent.point;
-    // const sa = (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
-    // Same coordinates, both events
-    // are left endpoints or right endpoints.
-    // not collinear
-    if (signedArea(p1, e1.otherEvent.point, e2.otherEvent.point) !== 0) {
-        // the event associate to the bottom segment is processed first
-        return (!e1.isBelow(e2.otherEvent.point)) ? 1 : -1;
-    }
-
-    return (!e1.isSubject && e2.isSubject) ? 1 : -1;
-}
-
-/* eslint-enable no-unused-vars */
-/**
- * @param  {SweepEvent} event
- * @param  {SweepEvent} prev
- * @param  {Operation} operation
- */
-function computeFields(event, prev, operation) {
-    // compute inOut and otherInOut fields
-    if (prev === null) {
-        event.inOut = false;
-        event.otherInOut = true;
-
-        // previous line segment in sweepline belongs to the same polygon
-    } else {
-        if (event.isSubject === prev.isSubject) {
-            event.inOut = !prev.inOut;
-            event.otherInOut = prev.otherInOut;
-
-            // previous line segment in sweepline belongs to the clipping polygon
-        } else {
-            event.inOut = !prev.otherInOut;
-            event.otherInOut = prev.isVertical() ? !prev.inOut : prev.inOut;
-        }
-
-        // compute prevInResult field
-        if (prev) {
-            event.prevInResult = (!inResult(prev, operation) || prev.isVertical())
-                ? prev.prevInResult : prev;
-        }
-    }
-
-    // check if the line segment belongs to the Boolean operation
-    event.inResult = inResult(event, operation);
-}
-
-
 /* eslint-disable indent */
-function inResult(event, operation) {
-    switch (event.type) {
+function inResult(sweepEvent, operation) {
+    switch (sweepEvent.type) {
         case NORMAL:
             switch (operation) {
                 case INTERSECTION:
-                    return !event.otherInOut;
+                    return !sweepEvent.otherInOut;
                 case UNION:
-                    return event.otherInOut;
+                    return sweepEvent.otherInOut;
                 case DIFFERENCE:
-                    // return (event.isSubject && !event.otherInOut) ||
-                    //         (!event.isSubject && event.otherInOut);
-                    return (event.isSubject && event.otherInOut) ||
-                        (!event.isSubject && !event.otherInOut);
+                    // return (sweepEvent.isSubject && !sweepEvent.otherInOut) ||
+                    //         (!sweepEvent.isSubject && sweepEvent.otherInOut);
+                    return (sweepEvent.isSubject && sweepEvent.otherInOut) ||
+                        (!sweepEvent.isSubject && !sweepEvent.otherInOut);
                 case XOR:
                     return true;
             }
@@ -537,13 +664,13 @@ function inResult(event, operation) {
  * @return {Array.<SweepEvent>}
  */
 function orderEvents(sortedEvents) {
-    let event, i, len, tmp;
+    let sweepEvent, i, len, tmp;
     const resultEvents = [];
     for (i = 0, len = sortedEvents.length; i < len; i++) {
-        event = sortedEvents[i];
-        if ((event.left && event.inResult) ||
-            (!event.left && event.otherEvent.inResult)) {
-            resultEvents.push(event);
+        sweepEvent = sortedEvents[i];
+        if ((sweepEvent.left && sweepEvent.inResult) ||
+            (!sweepEvent.left && sweepEvent.otherEvent.inResult)) {
+            resultEvents.push(sweepEvent);
         }
     }
     // Due to overlapping edges the resultEvents array can be not wholly sorted
@@ -561,20 +688,22 @@ function orderEvents(sortedEvents) {
         }
     }
     for (i = 0, len = resultEvents.length; i < len; i++) {
-        event = resultEvents[i];
-        event.pos = i;
+        sweepEvent = resultEvents[i];
+        sweepEvent.pos = i;
     }
 
-    // imagine, the right event is found in the beginning of the queue,
+    // imagine, the right sweepEvent is found in the beginning of the queue,
     // when his left counterpart is not marked yet
     for (i = 0, len = resultEvents.length; i < len; i++) {
-        event = resultEvents[i];
-        if (!event.left) {
-            tmp = event.pos;
-            event.pos = event.otherEvent.pos;
-            event.otherEvent.pos = tmp;
+        sweepEvent = resultEvents[i];
+        if (!sweepEvent.left) {
+            tmp = sweepEvent.pos;
+            sweepEvent.pos = sweepEvent.otherEvent.pos;
+            sweepEvent.otherEvent.pos = tmp;
         }
     }
+    
+    console.log('resultEvents.length', resultEvents.length);
 
     return resultEvents;
 }
@@ -626,56 +755,56 @@ function connectEdges(sortedEvents, operation) {
     // "false"-filled array
     const processed = {};
     const result = [];
-    let event;
+    let sweepEvent;
 
     for (i = 0, len = resultEvents.length; i < len; i++) {
         if (processed[i]) continue;
-        const contour = [[]];
+        const contour = [];
 
-        if (!resultEvents[i].isExteriorRing) {
-            if (operation === DIFFERENCE && !resultEvents[i].isSubject && result.length === 0) {
-                result.push(contour);
-            } else if (result.length === 0) {
-                result.push([[contour]]);
-            } else {
-                result[result.length - 1].push(contour[0]);
-            }
-        } else if (operation === DIFFERENCE && !resultEvents[i].isSubject && result.length > 1) {
-            result[result.length - 1].push(contour[0]);
-        } else {
+        // if (!resultEvents[i].isExteriorRing) {
+        //     if (operation === DIFFERENCE && !resultEvents[i].isSubject && result.length === 0) {
+        //         result.push(contour);
+        //     } else if (result.length === 0) {
+        //         result.push([[contour]]);
+        //     } else {
+        //         result[result.length - 1].push(contour[0]);
+        //     }
+        // } else if (operation === DIFFERENCE && !resultEvents[i].isSubject && result.length > 1) {
+        //     result[result.length - 1].push(contour[0]);
+        // } else {
             result.push(contour);
-        }
+        // }
 
         const ringId = result.length - 1;
         let pos = i;
 
         const initial = resultEvents[i].point;
-        contour[0].push(initial);
+        contour.push(initial);
 
         while (pos >= i) {
-            event = resultEvents[pos];
+            sweepEvent = resultEvents[pos];
             processed[pos] = true;
 
-            if (event.left) {
-                event.resultInOut = false;
-                event.contourId = ringId;
+            if (sweepEvent.left) {
+                sweepEvent.resultInOut = false;
+                sweepEvent.contourId = ringId;
             } else {
-                event.otherEvent.resultInOut = true;
-                event.otherEvent.contourId = ringId;
+                sweepEvent.otherEvent.resultInOut = true;
+                sweepEvent.otherEvent.contourId = ringId;
             }
 
-            pos = event.pos;
+            pos = sweepEvent.pos;
             processed[pos] = true;
-            contour[0].push(resultEvents[pos].point);
+            contour.push(resultEvents[pos].point);
             pos = nextPos(pos, resultEvents, processed, i);
         }
 
         pos = pos === -1 ? i : pos;
 
-        event = resultEvents[pos];
-        processed[pos] = processed[event.pos] = true;
-        event.otherEvent.resultInOut = true;
-        event.otherEvent.contourId = ringId;
+        sweepEvent = resultEvents[pos];
+        processed[pos] = processed[sweepEvent.pos] = true;
+        sweepEvent.otherEvent.resultInOut = true;
+        sweepEvent.otherEvent.contourId = ringId;
     }
 
     // Handle if the result is a polygon (eg not multipoly)
@@ -721,98 +850,6 @@ function divideSegment(se, p, eventQueue) {
     return eventQueue;
 }
 
-function possibleIntersection(se1, se2, eventQueue) {
-    // that disallows self-intersecting polygons,
-    // did cost us half a day, so I'll leave it
-    // out of respect
-    // if (se1.isSubject === se2.isSubject) return;
-    const inter = segmentIntersection(
-        se1.point, se1.otherEvent.point,
-        se2.point, se2.otherEvent.point
-    );
-
-    const nintersections = inter ? inter.length : 0;
-    if (nintersections === 0) return 0; // no intersection
-
-    // the line segments intersect at an endpoint of both line segments
-    if ((nintersections === 1) &&
-        (equals(se1.point, se2.point) ||
-            equals(se1.otherEvent.point, se2.otherEvent.point))) {
-        return 0;
-    }
-
-    if (nintersections === 2 && se1.isSubject === se2.isSubject) {
-        return 0;
-    }
-
-    // The line segments associated to se1 and se2 intersect
-    if (nintersections === 1) {
-        // if the intersection point is not an endpoint of se1
-        if (!equals(se1.point, inter[0]) && !equals(se1.otherEvent.point, inter[0])) {
-            divideSegment(se1, inter[0], eventQueue);
-        }
-        // if the intersection point is not an endpoint of se2
-        if (!equals(se2.point, inter[0]) && !equals(se2.otherEvent.point, inter[0])) {
-            divideSegment(se2, inter[0], eventQueue);
-        }
-        return 1;
-    }
-
-    // The line segments associated to se1 and se2 overlap
-    const events = [];
-    let leftCoincide = false;
-    let rightCoincide = false;
-
-    if (equals(se1.point, se2.point)) {
-        leftCoincide = true; // linked
-    } else if (compareEvents(se1, se2) === 1) {
-        events.push(se2, se1);
-    } else {
-        events.push(se1, se2);
-    }
-
-    if (equals(se1.otherEvent.point, se2.otherEvent.point)) {
-        rightCoincide = true;
-    } else if (compareEvents(se1.otherEvent, se2.otherEvent) === 1) {
-        events.push(se2.otherEvent, se1.otherEvent);
-    } else {
-        events.push(se1.otherEvent, se2.otherEvent);
-    }
-
-    if ((leftCoincide && rightCoincide) || leftCoincide) {
-        // both line segments are equal or share the left endpoint
-        se2.type = NON_CONTRIBUTING;
-        se1.type = (se2.inOut === se1.inOut)
-            ? SAME_TRANSITION : DIFFERENT_TRANSITION;
-
-        if (leftCoincide && !rightCoincide) {
-            // honestly no idea, but changing events selection from [2, 1]
-            // to [0, 1] fixes the overlapping self-intersecting polygons issue
-            divideSegment(events[1].otherEvent, events[0].point, eventQueue);
-        }
-        return 2;
-    }
-
-    // the line segments share the right endpoint
-    if (rightCoincide) {
-        divideSegment(events[0], events[1].point, eventQueue);
-        return 3;
-    }
-
-    // no line segment includes totally the other one
-    if (events[0] !== events[3].otherEvent) {
-        divideSegment(events[0], events[1].point, eventQueue);
-        divideSegment(events[1], events[2].point, eventQueue);
-        return 3;
-    }
-
-    // one line segment includes the other one
-    divideSegment(events[0], events[1].point, eventQueue);
-    divideSegment(events[3].otherEvent, events[2].point, eventQueue);
-
-    return 3;
-}
-
 function equals(p1, p2) {
     if (p1[0] === p2[0]) {
         if (p1[1] === p2[1]) {
@@ -825,15 +862,21 @@ function equals(p1, p2) {
 }
 
 function processPolygon(contourOrHole, isSubject, depth, eventQueue, bbox, isExteriorRing) {
-    let i, len, s1, s2, e1, e2;
-    for (i = 0, len = contourOrHole.length - 1; i < len; i++) {
-        s1 = contourOrHole[i];
-        s2 = contourOrHole[i + 1];
-        e1 = new SweepEvent(s1, false, undefined, isSubject);
-        e2 = new SweepEvent(s2, false, e1, isSubject);
+    let i, p1, p2, e1, e2;
+    for (i = 0; i < contourOrHole.length; i++) {
+        p1 = contourOrHole[i];
+
+        if (i === contourOrHole.length - 1) {
+            p2 = contourOrHole[0];
+        } else {
+            p2 = contourOrHole[i + 1];
+        }
+
+        e1 = new SweepEvent(p1, false, undefined, isSubject);
+        e2 = new SweepEvent(p2, false, e1, isSubject);
         e1.otherEvent = e2;
 
-        if (s1[0] === s2[0] && s1[1] === s2[1]) {
+        if (p1[0] === p2[0] && p1[1] === p2[1]) {
             continue; // skip collapsed edges, or it breaks
         }
 
@@ -848,7 +891,7 @@ function processPolygon(contourOrHole, isSubject, depth, eventQueue, bbox, isExt
             e1.left = true;
         }
 
-        const x = s1[0], y = s1[1];
+        const x = p1[0], y = p1[1];
         bbox[0] = min(bbox[0], x);
         bbox[1] = min(bbox[1], y);
         bbox[2] = max(bbox[2], x);
@@ -856,36 +899,49 @@ function processPolygon(contourOrHole, isSubject, depth, eventQueue, bbox, isExt
 
         // Pushing it so the queue is sorted from left to right,
         // with object on the left having the highest priority.
+        // console.log('LogProcessPolygonInsert', JSON.stringify(e1.point));
+        // console.log('LogProcessPolygonInsert', JSON.stringify(e2.point));
         eventQueue.push(e1);
         eventQueue.push(e2);
     }
 }
 
-function fillQueue(subject, clipping, sbbox, cbbox, operation) {
-    const eventQueue = new Queue(null, compareEvents);
-    let polygonSet, isExteriorRing, i, ii, j, jj; //, k, kk;
+// function fillQueue(subject, clipping, subjectBbox, clippingBbox, operation) {
+//     const eventQueue = new Queue(null, compareEvents);
+//     let polygonSet, isExteriorRing, i, ii, j, jj; //, k, kk;
+//
+//     for (i = 0; i < subject.length; i++) {
+//         polygonSet = subject[i];
+//         for (j = 0; j < polygonSet.length; j++) {
+//             isExteriorRing = j === 0;
+//             if (isExteriorRing)
+//                 contourId++;
+//             processPolygon(polygonSet[j], true, contourId, eventQueue, subjectBbox, isExteriorRing);
+//         }
+//     }
+//
+//     for (i = 0, ii = clipping.length; i < ii; i++) {
+//         polygonSet = clipping[i];
+//         for (j = 0, jj = polygonSet.length; j < jj; j++) {
+//             isExteriorRing = j === 0;
+//             if (operation === DIFFERENCE)
+//                 isExteriorRing = false;
+//             if (isExteriorRing)
+//                 contourId++;
+//             processPolygon(polygonSet[j], false, contourId, eventQueue, clippingBbox, isExteriorRing);
+//         }
+//     }
+//
+//     return eventQueue;
+// }
 
-    for (i = 0; i < subject.length; i++) {
-        polygonSet = subject[i];
-        for (j = 0; j < polygonSet.length; j++) {
-            isExteriorRing = j === 0;
-            if (isExteriorRing)
-                contourId++;
-            processPolygon(polygonSet[j], true, contourId, eventQueue, sbbox, isExteriorRing);
-        }
-    }
+function fillQueue(subject, clipping, subjectBbox, clippingBbox, operation = null) {
+    const eventQueue = new LinkedList(compareEvents);
 
-    for (i = 0, ii = clipping.length; i < ii; i++) {
-        polygonSet = clipping[i];
-        for (j = 0, jj = polygonSet.length; j < jj; j++) {
-            isExteriorRing = j === 0;
-            if (operation === DIFFERENCE)
-                isExteriorRing = false;
-            if (isExteriorRing)
-                contourId++;
-            processPolygon(polygonSet[j], false, contourId, eventQueue, cbbox, isExteriorRing);
-        }
-    }
+    processPolygon(subject[0][0], true, ++contourId, eventQueue, subjectBbox, true);
+    console.log('LogProcessSubjectPolygon', JSON.stringify(subjectBbox));
+    processPolygon(clipping[0][0], false, ++contourId, eventQueue, clippingBbox, true);
+    console.log('LogProcessClippingPolygon', JSON.stringify(clippingBbox));
 
     return eventQueue;
 }
@@ -897,23 +953,23 @@ function boolean(subject, clipping, operation) {
     if (typeof clipping[0][0][0] === 'number') {
         clipping = [clipping];
     }
-    let trivial = trivialOperation(subject, clipping, operation);
-    if (trivial) {
-        return trivial === EMPTY ? null : trivial;
-    }
-    const sbbox = [Infinity, Infinity, -Infinity, -Infinity];
-    const cbbox = [Infinity, Infinity, -Infinity, -Infinity];
+    // let trivial = trivialOperation(subject, clipping, operation);
+    // if (trivial) {
+    //     return trivial === EMPTY ? null : trivial;
+    // }
+    const subjectBbox = [Infinity, Infinity, -Infinity, -Infinity];
+    const clippingBbox = [Infinity, Infinity, -Infinity, -Infinity];
 
     //console.time('fill queue');
-    const eventQueue = fillQueue(subject, clipping, sbbox, cbbox, operation);
+    const eventQueue = fillQueue(subject, clipping, subjectBbox, clippingBbox, operation);
     //console.timeEnd('fill queue');
 
-    trivial = compareBBoxes(subject, clipping, sbbox, cbbox, operation);
-    if (trivial) {
-        return trivial === EMPTY ? null : trivial;
-    }
+    // trivial = compareBBoxes(subject, clipping, subjectBbox, clippingBbox, operation);
+    // if (trivial) {
+    //     return trivial === EMPTY ? null : trivial;
+    // }
     //console.time('subdivide edges');
-    const sortedEvents = subdivideSegments(eventQueue, subject, clipping, sbbox, cbbox, operation);
+    const sortedEvents = subdivideSegments(eventQueue, subjectBbox, clippingBbox, operation);
     //console.timeEnd('subdivide edges');
 
     //console.time('connect vertices');
@@ -938,6 +994,34 @@ function intersection(subject, clipping) {
     return boolean(subject, clipping, INTERSECTION);
 }
 
+function getResultEvents(subject, clipping) {
+    if (typeof subject[0][0][0] === 'number') {
+        subject = [subject];
+    }
+    if (typeof clipping[0][0][0] === 'number') {
+        clipping = [clipping];
+    }
+    // let trivial = trivialOperation(subject, clipping, operation);
+    // if (trivial) {
+    //     return trivial === EMPTY ? null : trivial;
+    // }
+    const subjectBbox = [Infinity, Infinity, -Infinity, -Infinity];
+    const clippingBbox = [Infinity, Infinity, -Infinity, -Infinity];
+
+    //console.time('fill queue');
+    const eventQueue = fillQueue(subject, clipping, subjectBbox, clippingBbox, INTERSECTION);
+    //console.timeEnd('fill queue');
+
+    // trivial = compareBBoxes(subject, clipping, subjectBbox, clippingBbox, operation);
+    // if (trivial) {
+    //     return trivial === EMPTY ? null : trivial;
+    // }
+    //console.time('subdivide edges');
+    const sortedEvents = subdivideSegments(eventQueue, subjectBbox, clippingBbox, INTERSECTION);
+    return orderEvents(sortedEvents);
+}
+
 module.exports = {
-    intersection
+    intersection,
+    getResultEvents
 };
